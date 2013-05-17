@@ -253,6 +253,11 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  if(thread_get_priority() <= priority)
+  {
+    thread_yield();
+  }
+
   return tid;
 }
 
@@ -387,14 +392,37 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
+  if (thread_mlfqs)
+  {
+    return;
+  }
   thread_current ()->priority = new_priority;
+  thread_yield();
+}
+
+static int
+thread_priority(struct thread *t)
+{
+  enum intr_level old_level = intr_disable();
+  int priority;
+  if (thread_mlfqs)
+  {
+    priority = t->priority;
+  }
+  else
+  {
+    // TODO
+    priority = t->priority;
+  }
+  intr_set_level(old_level);
+  return priority;
 }
 
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void) 
 {
-  return thread_current ()->priority;
+  return thread_priority(thread_current());
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -490,12 +518,21 @@ threads_get_num_ready (void)
   return size;
 }
 
+static int 
+thread_recent_cpu (struct thread *t)
+{
+  return fix_round(fix_mul(t->recent_cpu, fpt100));
+}
+
 /* Returns 100 times the current thread's recent_cpu value. */
 int
 thread_get_recent_cpu (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  enum intr_level old_level = intr_disable();
+  int recent = thread_recent_cpu(thread_current());
+  intr_set_level (old_level);
+  printf("Recent cpu: %d\n", recent);
+  return recent;
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
@@ -609,6 +646,15 @@ alloc_frame (struct thread *t, size_t size)
   return t->stack;
 }
 
+static bool
+thread_priority_comapre(const struct list_elem *left, 
+    const struct list_elem *right, void *aux UNUSED)
+{
+  struct thread *ta = list_entry(left, struct thread, elem);
+  struct thread *tb = list_entry(right, struct thread, elem);
+  return thread_priority(ta) < thread_priority(tb);
+}
+
 /* Chooses and returns the next thread to be scheduled.  Should
    return a thread from the run queue, unless the run queue is
    empty.  (If the running thread can continue running, then it
@@ -618,9 +664,13 @@ static struct thread *
 next_thread_to_run (void) 
 {
   if (list_empty (&ready_list))
+  {
     return idle_thread;
-  else
-    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+  }
+  struct list_elem *el = list_max(&ready_list, &thread_priority_comapre, NULL);
+  list_remove (el);
+  return list_entry (el, struct thread, elem);
+    //return list_entry (list_pop_front (&ready_list), struct thread, elem);
 }
 
 /* Completes a thread switch by activating the new thread's page
