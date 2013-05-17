@@ -11,6 +11,8 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "threads/fixed-point.h"
+#include "devices/timer.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -23,6 +25,8 @@
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
+
+static struct list sleeping_list;
 
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
@@ -59,6 +63,14 @@ static unsigned thread_ticks;   /* # of timer ticks since last yield. */
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
 
+fixed_point_t load_avg;
+fixed_point_t fpt100;
+fixed_point_t fpt60;
+fixed_point_t fpt59;
+fixed_point_t fpt4;
+fixed_point_t fpt2;
+fixed_point_t fpt1;
+
 static void kernel_thread (thread_func *, void *aux);
 
 static void idle (void *aux UNUSED);
@@ -70,6 +82,16 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+
+void thread_add_sleep(int64_t ticks);
+static void thread_wakeup (void);
+bool thread_commpare_wakeup(const struct list_elem *left, 
+    const struct list_elem *right, void *aux UNUSED);
+
+static void thread_calclualte_priority (struct thread *t, void *aux UNUSED);
+static void thread_calculate_recent_cpu (struct thread *t, void *aux UNUSED);
+static void thread_calculate_load (void);
+static size_t threads_get_num_ready (void);
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -92,6 +114,15 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  list_init (&sleeping_list);
+
+  load_avg = fix_int(0);
+  fpt100 = fix_int(100);
+  fpt59 = fix_int(59);
+  fpt60 = fix_int(60);
+  fpt4 = fix_int(4);
+  fpt2 = fix_int(2);
+  fpt1 = fix_int(1);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -134,9 +165,22 @@ thread_tick (void)
   else
     kernel_ticks++;
 
+  if(thread_mlfqs && ((timer_ticks() % TIMER_FREQ) == 0))
+  {
+    thread_calculate_load ();
+    thread_foreach(thread_calculate_recent_cpu, NULL);
+    thread_foreach(thread_calclualte_priority, NULL);
+  }
+
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
+  {
+    if (thread_mlfqs && t != idle_thread)
+    {
+      thread_calclualte_priority (thread_current(), NULL);
+    }
     intr_yield_on_return ();
+  }
 }
 
 /* Prints thread statistics. */
@@ -355,25 +399,95 @@ thread_get_priority (void)
 
 /* Sets the current thread's nice value to NICE. */
 void
-thread_set_nice (int nice UNUSED) 
+thread_set_nice (int nice) 
 {
-  /* Not yet implemented. */
+  if (nice < -20)
+  {
+    nice = -20;
+  }
+  else if (nice > 20)
+  {
+    nice = 20;
+  }
+  struct thread *t = thread_current();
+
+  enum intr_level old_level = intr_disable();
+  t->nice = nice;
+  thread_calclualte_priority (t, NULL);
+  intr_set_level(old_level);
 }
 
 /* Returns the current thread's nice value. */
 int
 thread_get_nice (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  return thread_current()->nice;
+}
+
+static void 
+thread_calclualte_priority (struct thread *t, void *aux UNUSED)
+{
+  int new_priority = PRI_MAX - fix_round(fix_add(fix_div(t->recent_cpu, fpt4), fix_int(t->nice*2)));
+
+  if (new_priority > PRI_MAX)
+  {
+    new_priority = PRI_MAX;
+  }
+  else if (new_priority < PRI_MIN)
+  {
+    new_priority = PRI_MIN;
+  }
+
+  t->priority = new_priority;
+
+  if (t == running_thread())
+  {
+    return;
+  }
+
+  if (t->status == THREAD_RUNNING)
+  {
+    list_remove(&t->elem);
+    list_push_back (&ready_list, &t->elem);
+  }
+}
+
+static void
+thread_calculate_recent_cpu (struct thread *t, void *aux UNUSED)
+{
+  fixed_point_t recent = fix_mul( fpt2, load_avg);
+  recent = fix_div( recent, fix_add( fix_mul( fpt2, load_avg), fpt1));
+  recent = fix_mul(recent, t->recent_cpu);
+  recent = fix_add(recent, fix_int(t->nice));
+  t->recent_cpu = recent;
+}
+
+/* Recalculates the load avg every TIMER_FREQ */
+static void
+thread_calculate_load (void)
+{
+  size_t nReady = threads_get_num_ready ();
+  fixed_point_t left = fix_mul( fix_div(fpt59, fpt60), load_avg );
+  fixed_point_t right = fix_scale( fix_div(fpt1, fpt60), nReady);
+  load_avg = fix_add(left, right);
 }
 
 /* Returns 100 times the system load average. */
 int
 thread_get_load_avg (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  return fix_round(fix_mul(load_avg, fpt100)); 
+}
+
+size_t
+threads_get_num_ready (void)
+{
+  size_t size = list_size (&ready_list);
+  if (thread_current() != idle_thread)
+  {
+    ++size;
+  }
+  return size;
 }
 
 /* Returns 100 times the current thread's recent_cpu value. */
@@ -467,7 +581,17 @@ init_thread (struct thread *t, const char *name, int priority)
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
-  t->priority = priority;
+  if (!thread_mlfqs)
+  {
+    t->priority = priority;
+  }
+  else if (t != idle_thread)
+  {
+    struct thread *t_cur = running_thread();
+    t->priority = t_cur->priority;
+    t->nice = t_cur->nice;
+  }
+
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
 }
@@ -555,6 +679,7 @@ thread_schedule_tail (struct thread *prev)
 static void
 schedule (void) 
 {
+  thread_wakeup ();
   struct thread *cur = running_thread ();
   struct thread *next = next_thread_to_run ();
   struct thread *prev = NULL;
@@ -585,3 +710,45 @@ allocate_tid (void)
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+bool
+thread_commpare_wakeup(const struct list_elem *left, 
+    const struct list_elem *right, void *aux UNUSED)
+{
+  struct thread *ta = list_entry (left, struct thread, elem);
+  struct thread *tb = list_entry (right, struct thread, elem);
+
+  return ta->wakeup_time < tb->wakeup_time;
+}
+
+void thread_add_sleep(int64_t ticks)
+{
+  enum intr_level old_level = intr_disable();
+  
+  struct thread *t = thread_current();
+  t->wakeup_time = ticks + timer_ticks();
+
+  list_insert_ordered(&sleeping_list, &t->elem, thread_commpare_wakeup, NULL);
+  thread_block();
+
+  intr_set_level (old_level);
+}
+
+static void thread_wakeup (void)
+{
+  enum intr_level old_level = intr_disable();
+  while (!list_empty(&sleeping_list))
+  {
+    struct list_elem *el = list_begin(&sleeping_list);
+    struct thread *t = list_entry(el, struct thread, elem);
+    if (t->wakeup_time > timer_ticks())
+    {
+      break;
+    }
+
+    list_pop_front(&sleeping_list);
+    t->wakeup_time = 0;
+    thread_unblock(t);
+  }
+  intr_set_level (old_level);
+}

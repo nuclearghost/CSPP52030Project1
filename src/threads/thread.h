@@ -5,6 +5,8 @@
 #include <list.h>
 #include <stdint.h>
 
+#include "fixed-point.h"
+
 /* States in a thread's life cycle. */
 enum thread_status
   {
@@ -88,7 +90,11 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
+    int nice;                           /* Niceness. */
+    int64_t wakeup_time;                /* Wakeup Time */
     struct list_elem allelem;           /* List element for all threads list. */
+
+    fixed_point_t recent_cpu;
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
