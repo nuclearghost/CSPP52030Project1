@@ -491,6 +491,8 @@ thread_calculate_recent_cpu (struct thread *t, void *aux UNUSED)
   recent = fix_mul(recent, t->recent_cpu);
   recent = fix_add(recent, fix_int(t->nice));
   t->recent_cpu = recent;
+  char buf[32];
+  //printf("Thread = %d. Recent cpu: %s\n", t->tid, fix_tostring(t->recent_cpu, buf, 32)); 
 }
 
 /* Recalculates the load avg every TIMER_FREQ */
@@ -648,8 +650,8 @@ alloc_frame (struct thread *t, size_t size)
   return t->stack;
 }
 
-static bool
-thread_priority_comapre(const struct list_elem *left, 
+bool
+thread_priority_compare(const struct list_elem *left, 
     const struct list_elem *right, void *aux UNUSED)
 {
   struct thread *ta = list_entry(left, struct thread, elem);
@@ -669,7 +671,7 @@ next_thread_to_run (void)
   {
     return idle_thread;
   }
-  struct list_elem *el = list_max(&ready_list, &thread_priority_comapre, NULL);
+  struct list_elem *el = list_max(&ready_list, &thread_priority_compare, NULL);
   list_remove (el);
   return list_entry (el, struct thread, elem);
     //return list_entry (list_pop_front (&ready_list), struct thread, elem);
