@@ -163,7 +163,10 @@ thread_tick (void)
     user_ticks++;
 #endif
   else
+  {
+    t->recent_cpu = fix_add(t->recent_cpu, fpt1);
     kernel_ticks++;
+  }
 
   if(thread_mlfqs && ((timer_ticks() % TIMER_FREQ) == 0))
   {
@@ -531,7 +534,6 @@ thread_get_recent_cpu (void)
   enum intr_level old_level = intr_disable();
   int recent = thread_recent_cpu(thread_current());
   intr_set_level (old_level);
-  printf("Recent cpu: %d\n", recent);
   return recent;
 }
 
