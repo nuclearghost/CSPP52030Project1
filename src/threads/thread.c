@@ -404,6 +404,36 @@ thread_set_priority (int new_priority)
 }
 
 static int
+thread_get_donated_priority (struct thread *t)
+{
+  int priority = t->priority;
+
+  struct list_elem *lIter;
+  struct list_elem *lEnd = list_end (&t->holding_list);
+
+  for (lIter = list_begin (&t->holding_list);
+       lIter != lEnd; lIter = list_next(lIter))
+  {
+    struct lock *lock = list_entry(lIter, struct lock, leHolder);
+    struct list_elem *threadIter;
+    struct list_elem *tEnd = list_end (&lock->semaphore.waiters);
+
+    for (threadIter = list_begin(&lock->semaphore.waiters);
+        threadIter != tEnd; threadIter = list_next(threadIter))
+    {
+      struct thread *waiting_thread = list_entry(threadIter, struct thread, elem);
+      int waiting_priority = thread_get_donated_priority(waiting_thread);
+      if (waiting_priority > priority)
+      {
+        priority = waiting_priority;
+      }
+    }
+  }
+
+  return priority;
+}
+
+static int
 thread_priority(struct thread *t)
 {
   enum intr_level old_level = intr_disable();
@@ -414,8 +444,7 @@ thread_priority(struct thread *t)
   }
   else
   {
-    // TODO
-    priority = t->priority;
+    priority = thread_get_donated_priority (t);
   }
   intr_set_level(old_level);
   return priority;
@@ -491,7 +520,7 @@ thread_calculate_recent_cpu (struct thread *t, void *aux UNUSED)
   recent = fix_mul(recent, t->recent_cpu);
   recent = fix_add(recent, fix_int(t->nice));
   t->recent_cpu = recent;
-  char buf[32];
+  //char buf[32];
   //printf("Thread = %d. Recent cpu: %s\n", t->tid, fix_tostring(t->recent_cpu, buf, 32)); 
 }
 
@@ -635,6 +664,8 @@ init_thread (struct thread *t, const char *name, int priority)
 
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
+  
+  list_init(&t->holding_list);
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and

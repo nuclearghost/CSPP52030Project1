@@ -94,10 +94,11 @@ struct thread
     int64_t wakeup_time;                /* Wakeup Time */
     struct list_elem allelem;           /* List element for all threads list. */
 
-    fixed_point_t recent_cpu;
+    fixed_point_t recent_cpu;           /* recent cpu of this thread */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
+    struct list holding_list;           /* list of all the locks this thread is holding */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
